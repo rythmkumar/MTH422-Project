@@ -1,3 +1,9 @@
+## Install the following packages by uncmmenting and running the code
+# install.packages(c("glmnet", "monomvn", "grpreg","ordinalNet","Matrix"))
+# if (!require("remotes")) install.packages("remotes")
+# remotes::install_github("cran/EBglmnet")
+
+
 # Function: Penalty Regression MSE Calculator (Ridge-type)
 # Implements the approach from Gertheiss & Tutz (2016) using modern packages
 compute_penalty_mse <- function(X_train, y_train, true_coef, coef_list) {
@@ -52,18 +58,22 @@ compute_blasso_mse <- function(X_train, y_train, true_coef, coef_list) {
   
   # 1. Fit Bayesian Lasso with MCMC
   fit <- blasso(X_train, y_train, 
-                T = 1000,       # Total MCMC iterations
-                burnin = 200,   # Burn-in period
-                normalize = FALSE)  # Keep dummy variables unscaled
+                T = 3200,       # Total iterations (1000 post-burnin)
+                thin = 1,       # No thinning
+                normalize = FALSE)
   
-  # 2. Extract posterior mean coefficients (excluding intercept)
-  post_mean <- colMeans(fit$beta)
+  # 2. Manual burnin: Discard first 300 samples
+  keep_samples <- 301:3200
+  post_beta <- fit$beta[keep_samples, ]
+  
+  # 3. Extract posterior mean coefficients
+  post_mean <- colMeans(post_beta)
   names(post_mean) <- colnames(X_train)
   
-  # 2.5 Checking for Convergence of MCMC
+  # 3.5 Checking for Convergence of MCMC
   plot(fit$beta[, 1], type = 'l', main = "MCMC Trace Plot")
   
-  # 3. Calculate MSE metrics
+  # 4. Calculate MSE metrics
   results <- list(
     prediction_mse = mean((y_train - (X_train %*% post_mean))^2),
     coefficient_mse = sapply(coef_list, function(vars) {
@@ -77,31 +87,41 @@ compute_blasso_mse <- function(X_train, y_train, true_coef, coef_list) {
 
 # Function: Bayesian Elastic Net MSE Calculator
 compute_ben_mse <- function(X_train, y_train, true_coef, coef_list, 
-                            alpha = 0.5, # Elastic Net mixing parameter
-                            n_iter = 1000) {
-  require(BGLR)
+                            alpha = 0.2, lambda = 0.01) {
+  require(EBglmnet)
   
-  # 1. Prepare data for BGLR (requires centered response)
-  y_centered <- y_train - mean(y_train)
+  # 1. Get all variable names from design matrix
+  all_vars <- colnames(X_train)
+  n_vars <- length(all_vars)
   
-  # 2. Set up Elastic Net prior
-  ETA <- list(EN = list(X = X_train, 
-                        model = "EN",
-                        lambda = 0.1,   # Initial regularization
-                        alpha = alpha)) # α = 0 (ridge), 1 (lasso)
+  # 2. Fit EBglmnet model
+  fit <- EBglmnet::EBglmnet(x = X_train, 
+                            y = y_train,
+                            family = "gaussian",
+                            prior = "elastic net",
+                            hyperparameters = c(alpha, lambda))
   
-  # 3. Fit model
-  fit <- BGLR(y = y_centered,
-              ETA = ETA,
-              nIter = n_iter,
-              burnIn = 200,
-              verbose = FALSE)
+  # 3. Extract coefficients using predictor indices
+  if(nrow(fit$fit) > 0) {
+    # Get column indices from 'predictor' column (1-based)
+    var_indices <- as.numeric(fit$fit[, "predictor"])
+    
+    # Convert indices to variable names
+    nonzero_vars <- all_vars[var_indices]
+    nonzero_beta <- fit$fit[, "beta"]
+  } else {
+    nonzero_vars <- character(0)
+    nonzero_beta <- numeric(0)
+  }
   
-  # 4. Extract coefficients (re-center intercept)
-  ben_coef <- c(fit$mu + mean(y_train), fit$ETA$EN$b)
-  names(ben_coef) <- c("(Intercept)", colnames(X_train))
+  # 4. Create full coefficient vector with zeros
+  ben_coef <- setNames(rep(0, n_vars), all_vars)
+  ben_coef[nonzero_vars] <- nonzero_beta
   
-  # 5. Calculate MSE metrics
+  # 5. Add intercept
+  ben_coef <- c("(Intercept)" = fit$Intercept, ben_coef)
+  
+  # 6. Calculate MSE metrics
   results <- list(
     prediction_mse = mean((y_train - (X_train %*% ben_coef[-1] + ben_coef[1]))^2),
     coefficient_mse = sapply(coef_list, function(vars) {
@@ -160,6 +180,12 @@ compute_glasso_mse <- function(df_train, y_train, true_coef, coef_list) {
   return(results)
 }
 
+
+# Helper function to create Laplacian matrix
+get_laplacian <- function(n) {
+  D <- diff(diag(n), differences = 1)
+  t(D) %*% D
+}
 compute_glap_mse <- function(df_train, y_train, true_coef, coef_list) {
   require(ordinalNet)
   require(Matrix)
@@ -209,10 +235,5 @@ compute_glap_mse <- function(df_train, y_train, true_coef, coef_list) {
   return(results)
 }
 
-# Helper function to create Laplacian matrix
-get_laplacian <- function(n) {
-  D <- diff(diag(n), differences = 1)
-  t(D) %*% D
-}
 
 
