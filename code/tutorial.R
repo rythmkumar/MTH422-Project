@@ -1,18 +1,14 @@
 # Install and load necessary packages
-# install.packages("rstanarm")
-# library(rstanarm)
-install.packages(c("rstanarm", "monomvn", "EBglmnet", "grpreg"))
-library(rstanarm)
-library(monomvn)
-library(EBglmnet)
-library(grpreg)
-library(rjags)
+# install.packages(c("bayesm","mcclust"))
+# install.packages("remotes")
+# remotes::install_github("cran/GreedyEPL")
+# install.packages("https://cran.r-project.org/src/contrib/Archive/effectFusion/effectFusion_1.1.3.tar.gz", 
+#                  repos = NULL, type = "source")
 
 # Set seed for reproducibility
 set.seed(123)
 
 # Define parameters
-# n_datasets <- 100
 n_obs <- 500
 mu <- 1
 sigma <- 1
@@ -62,47 +58,236 @@ generate_data <- function() {
   X <- X[, -1]
   epsilon <- rnorm(n_obs, 0, sigma)
   y <- mu + as.vector(X %*% true_coef) + epsilon  # Intercept added separately
+  return(list(y = y, df = df,X= X))
+}
+
+# Function for Fusion Model evaluation
+compute_fusion_mse <- function(df_train,X_train, y_train, true_coef, coef_list) {
+  require(effectFusion)
   
-  return(list(y = y, df = df, X = X))
+  # 1. Fit fusion model with spike and slab prior
+  fusion_fit <- effectFusion(
+    y = y_train,
+    X = df_train, 
+    types = sim1$types,
+    method = "SpikeSlab",
+    prior = list(r = 20000, G0 = 20),
+    mcmc = list(M = 10000, burnin = 5000),
+    modelSelection = "binder"
+  )
+  
+  # 2. Extract posterior means of coefficients
+  invisible_output <- capture.output(coef_det <- summary(fusion_fit)[2:nrow(summary(fusion_fit)),])
+  fit_coef <- coef_det[,1]
+  invisible_output <- capture.output(mu_coef <- summary(fusion_fit)[1,1])
+  names(fit_coef)<- names(true_coef)
+  
+  # 3. Calculate prediction MSE
+  y_pred <- mu_coef + as.numeric(X_train %*% fit_coef)
+  prediction_mse <- mean((y_train - y_pred)^2)
+  
+  # 4. Calculate coefficient MSEs per categorical variable
+  coefficient_mse <- sapply(coef_list, function(vars) {
+    mean((true_coef[vars] - fit_coef[vars])^2)
+  })
+  
+  # 5. Return results
+  results <- list(
+    prediction_mse = prediction_mse,
+    coefficient_mse = coefficient_mse,
+    estimates = fit_coef
+  )
+  
+  return(results)
 }
 
-fit_glasso <- function(y, X) {
-  # data_sim <- generate_data()
-  # y <- data_sim$y
-  # df_train <- data_sim$df
-  # X <- data_sim$X
-  # 
-  group <- rep(1:8, times = sapply(coef_list, length))
-  fit <- grpreg(X, y, group, penalty = "grLasso", nlambda = 100)
-  intercept <- fit$beta[, 100][1]
-  coefs <- fit$beta[, 100][-1]  # Only dummy coefficients
-  names(coefs) <- colnames(X)
-  return(list(coefs = c("(Intercept)" = intercept, coefs), 
-              pred = function(X_new) intercept + X_new %*% coefs))
+compute_full_mse <- function(df_train, X_train, y_train, true_coef, coef_list) {
+  require(effectFusion)
+  
+  # 1. Fit full model (no fusion)
+  full_fit <- effectFusion(
+    y = y_train,
+    X = df_train, 
+    types = sim1$types,
+    method = NULL,  # No fusion
+    mcmc = list(M = 3000, burnin = 1000)  # Using shorter chain for full model
+  )
+  
+  # 2. Extract posterior means of coefficients
+  invisible_output <- capture.output(coef_det <- summary(full_fit)[2:nrow(summary(full_fit)),])
+  fit_coef <- coef_det[,1]
+  invisible_output <- capture.output(mu_coef <- summary(full_fit)[1,1])
+  names(fit_coef) <- names(true_coef)
+  
+  # 3. Calculate prediction MSE
+  y_pred <- mu_coef + as.numeric(X_train %*% fit_coef)
+  prediction_mse <- mean((y_train - y_pred)^2)
+  
+  # 4. Calculate coefficient MSEs per categorical variable
+  coefficient_mse <- sapply(coef_list, function(vars) {
+    mean((true_coef[vars] - fit_coef[vars])^2)
+  })
+  
+  # 5. Return results
+  results <- list(
+    prediction_mse = prediction_mse,
+    coefficient_mse = coefficient_mse,
+    estimates = fit_coef
+  )
+  
+  return(results)
+}
+
+generate_X_true <- function(df_train, true_coef) {
+  # Create a copy of the original data frame
+  X_true <- df_train
+  
+  # C1: Fusion pattern (0,1,1,2,2,4,4)
+  # Level 1 = reference/0, Level 2 = 0 (should be fused with level 1), 
+  # Levels 3-4 = 1, Levels 5-6 = 2, Levels 7-8 = 4
+  X_true$C1 <- factor(ifelse(df_train$C1 %in% c(1, 2), 1,  # Fuse levels 1-2 (both have effect 0)
+                             ifelse(df_train$C1 %in% c(3, 4), 3,    # Fuse levels 3-4 (effect = 1)
+                                    ifelse(df_train$C1 %in% c(5, 6), 5,    # Fuse levels 5-6 (effect = 2)
+                                           ifelse(df_train$C1 %in% c(7, 8), 7,    # Fuse levels 7-8 (effect = 4)
+                                                  df_train$C1)))))
+  
+  # C2: All coefficients are 0, fuse all levels
+  X_true$C2 <- factor(rep(1, nrow(df_train)))
+  
+  # C3: Fusion pattern (0,0,-2,-2)
+  # Levels 1-2 = 0 (should be fused), Levels 3-4 = -2
+  X_true$C3 <- factor(ifelse(df_train$C3 %in% c(1, 2), 1,  # Fuse levels 1-2 (both have effect 0)
+                             ifelse(df_train$C3 %in% c(3, 4), 3,    # Fuse levels 3-4 (effect = -2)
+                                    df_train$C3)))
+  
+  # C4: All coefficients are 0, fuse all levels
+  X_true$C4 <- factor(rep(1, nrow(df_train)))
+  
+  # C5: Fusion pattern (0,0,1,1,1,1,-2,-2)
+  # Levels 1-2 = 0 (should be fused), Levels 3-6 = 1, Levels 7-8 = -2
+  X_true$C5 <- factor(ifelse(df_train$C5 %in% c(1, 2), 1,  # Fuse levels 1-2 (both have effect 0)
+                             ifelse(df_train$C5 %in% c(3, 4, 5, 6), 3,  # Fuse levels 3-6 (effect = 1)
+                                    ifelse(df_train$C5 %in% c(7, 8), 7,    # Fuse levels 7-8 (effect = -2)
+                                           df_train$C5))))
+  
+  # C6: All coefficients are 0, fuse all levels
+  X_true$C6 <- factor(rep(1, nrow(df_train)))
+  
+  # C7: Fusion pattern (0,0,2,2)
+  # Levels 1-2 = 0 (should be fused), Levels 3-4 = 2
+  X_true$C7 <- factor(ifelse(df_train$C7 %in% c(1, 2), 1,  # Fuse levels 1-2 (both have effect 0)
+                             ifelse(df_train$C7 %in% c(3, 4), 3,    # Fuse levels 3-4 (effect = 2)
+                                    df_train$C7)))
+  
+  # C8: All coefficients are 0, fuse all levels
+  X_true$C8 <- factor(rep(1, nrow(df_train)))
+  
+  # Ensure all columns are factors
+  X_true <- as.data.frame(lapply(X_true, factor))
+  
+  return(X_true)
+}
+
+compute_true_mse <- function(df_train, X_train, y_train, true_coef, coef_list) {
+  require(effectFusion)
+  
+  # 1. Generate X_true using fusion patterns
+  X_true <- generate_X_true(df_train, true_coef)
+  
+  # 2. Fit model with the true fusion structure
+  true_fit <- effectFusion(
+    y = y_train, 
+    X = X_true,
+    types = sim1$types,
+    method = NULL,
+    mcmc = list(M = 3000, burnin = 1000)
+  )
+  
+  # 3. Extract posterior means of coefficients
+  invisible_output <- capture.output(coef_det <- summary(true_fit)[2:nrow(summary(true_fit)),])
+  fit_coef_true <- coef_det[,1]
+  invisible_output <- capture.output(mu_coef <- summary(true_fit)[1,1])
+  
+  # 4. Create design matrix from X_true for prediction (including only variables with multiple levels)
+  X_true_matrix <- model.matrix(~ C1 + C3 + C5 + C7, data = X_true)[, -1]
+  
+  # 5. Calculate prediction MSE using refitted coefficients
+  names(fit_coef_true) <- colnames(X_true_matrix)
+  y_pred_true <- mu_coef + as.numeric(X_true_matrix %*% fit_coef_true)
+  prediction_mse <- mean((y_train - y_pred_true)^2)
+  
+  # 6. Map estimated coefficients back to original coefficient space
+  # Initialize with zeros
+  fit_coef <- rep(0, length(true_coef))
+  names(fit_coef) <- names(true_coef)
+  
+  # Map C1 coefficients (based on fusion pattern (0,1,1,2,2,4,4))
+  # Reference level (C12) stays at 0
+  if("C13" %in% names(fit_coef)) fit_coef["C13"] <- fit_coef_true["C12"] # Level 2
+  if("C14" %in% names(fit_coef)) fit_coef["C14"] <- fit_coef_true["C13"] # Level 3-4 fused
+  if("C13" %in% names(fit_coef)) fit_coef["C13"] <- fit_coef_true["C13"] # Level 3-4 fused
+  if("C15" %in% names(fit_coef)) fit_coef["C15"] <- fit_coef_true["C15"] # Level 5-6 fused
+  if("C16" %in% names(fit_coef)) fit_coef["C16"] <- fit_coef_true["C15"] # Level 5-6 fused
+  if("C17" %in% names(fit_coef)) fit_coef["C17"] <- fit_coef_true["C17"] # Level 7-8 fused
+  if("C18" %in% names(fit_coef)) fit_coef["C18"] <- fit_coef_true["C17"] # Level 7-8 fused
+  
+  # C2 coefficients all remain 0 (all fused to reference)
+  
+  # Map C3 coefficients (based on fusion pattern (0,0,-2,-2))
+  # Reference level (C32) stays at 0
+  # C33 and C34 are fused and share coefficient
+  if("C33" %in% names(fit_coef)) fit_coef["C33"] <- fit_coef_true["C33"] 
+  if("C34" %in% names(fit_coef)) fit_coef["C34"] <- fit_coef_true["C33"]
+  
+  # C4 coefficients all remain 0 (all fused to reference)
+  
+  # Map C5 coefficients (based on fusion pattern (0,0,1,1,1,1,-2,-2))
+  # Reference level (C52) stays at 0
+  # C53-C56 are fused and share coefficient
+  if("C53" %in% names(fit_coef)) fit_coef["C53"] <- fit_coef_true["C53"]
+  if("C54" %in% names(fit_coef)) fit_coef["C54"] <- fit_coef_true["C53"]
+  if("C55" %in% names(fit_coef)) fit_coef["C55"] <- fit_coef_true["C53"]
+  if("C56" %in% names(fit_coef)) fit_coef["C56"] <- fit_coef_true["C53"]
+  # C57-C58 are fused and share coefficient
+  if("C57" %in% names(fit_coef)) fit_coef["C57"] <- fit_coef_true["C57"]
+  if("C58" %in% names(fit_coef)) fit_coef["C58"] <- fit_coef_true["C57"]
+  
+  # C6 coefficients all remain 0 (all fused to reference)
+  
+  # Map C7 coefficients (based on fusion pattern (0,0,2,2))
+  # Reference level (C72) stays at 0
+  # C73 and C74 are fused and share coefficient
+  if("C73" %in% names(fit_coef)) fit_coef["C73"] <- fit_coef_true["C73"]
+  if("C74" %in% names(fit_coef)) fit_coef["C74"] <- fit_coef_true["C73"]
+  
+  # C8 coefficients all remain 0 (all fused to reference)
+  
+  # 7. Calculate coefficient MSEs per categorical variable
+  coefficient_mse <- sapply(coef_list, function(vars) {
+    mean((true_coef[vars] - fit_coef[vars])^2)
+  })
+  
+  # 8. Return results
+  results <- list(
+    prediction_mse = prediction_mse,
+    coefficient_mse = coefficient_mse,
+    estimates = fit_coef,
+    X_true = X_true
+  )
+  
+  return(results)
 }
 
 
-mse <- 0
-n_datasets <- 1
+n_datasets <- 1 ## chane accordingly 
 for (i in 1:n_datasets) {
   data_sim <- generate_data()
   y_train <- data_sim$y
   df_train <- data_sim$df
   X_train <- data_sim$X
-  
-  
-  ## glasso
-  # fit_res <- fit_glasso(y_train, X_train)
-  # coefs <- fit_res$coefs
-  
+ ## PLease put the models code here for getting the MSE's values
 }
 
-for (h in seq_along(coef_list)) {
-  coefs_h <- coef_list[[h]]
-  print(coefs_h)
-  mse <- mse + mean((coefs[coefs_h] - true_coef[coefs_h]) ^ 2)
-}
-pr
 # priorr : mu * sigma.2 * beta (with hyperparameters: gamma^2 * Q^-1(delta) * (c / 2))
 # Q^-1 is the prior precision matrix
 # mu follows flat normal distribution N (0, M0)
