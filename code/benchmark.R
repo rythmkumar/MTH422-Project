@@ -2,11 +2,11 @@
 # install.packages(c("glmnet", "monomvn", "grpreg","ordinalNet","Matrix"))
 # if (!require("remotes")) install.packages("remotes")
 # remotes::install_github("cran/EBglmnet")
-
+library(EBglmnet)
 
 # Function: Penalty Regression MSE Calculator (Ridge-type)
 # Implements the approach from Gertheiss & Tutz (2016) using modern packages
-compute_penalty_mse <- function(X_train, y_train, true_coef, coef_list) {
+compute_penalty_mse <- function(X_train, y_train, true_coef, coef_list, X_test, y_test) {
   require(glmnet)
   
   # 1. Prepare group penalty weights
@@ -34,7 +34,8 @@ compute_penalty_mse <- function(X_train, y_train, true_coef, coef_list) {
   # 4. Extract coefficients at optimal lambda
   fit_coef <- as.vector(coef(cv_fit, s = "lambda.min"))[-1]
   names(fit_coef) <- colnames(X_train)
-  
+  mu <- coef(cv_fit, s = "lambda.min")[1]
+  y_pred_test <- X_test %*% fit_coef + mu
   # 5. Calculate MSE metrics
   results <- list(
     # A. Prediction MSE
@@ -46,16 +47,16 @@ compute_penalty_mse <- function(X_train, y_train, true_coef, coef_list) {
     }),
     
     # C. Full coefficient estimates
-    estimates = fit_coef
+    estimates = fit_coef,
+    test_mse = mean((y_test - y_pred_test) ^ 2)
   )
   
   return(results)
 }
 
 # Function: Bayesian Lasso MSE Calculator
-compute_blasso_mse <- function(X_train, y_train, true_coef, coef_list) {
+compute_blasso_mse <- function(X_train, y_train, true_coef, coef_list, X_test, y_test) {
   require(monomvn)
-  
   # 1. Fit Bayesian Lasso with MCMC
   fit <- blasso(X_train, y_train, 
                 T = 3200,       # Total iterations (1000 post-burnin)
@@ -65,6 +66,7 @@ compute_blasso_mse <- function(X_train, y_train, true_coef, coef_list) {
   # 2. Manual burnin: Discard first 300 samples
   keep_samples <- 301:3200
   post_beta <- fit$beta[keep_samples, ]
+  mu <- mean(fit$mu[keep_samples])
   
   # 3. Extract posterior mean coefficients
   post_mean <- colMeans(post_beta)
@@ -75,11 +77,12 @@ compute_blasso_mse <- function(X_train, y_train, true_coef, coef_list) {
   
   # 4. Calculate MSE metrics
   results <- list(
-    prediction_mse = mean((y_train - (X_train %*% post_mean))^2),
+    prediction_mse = mean((y_train - (X_train %*% post_mean) - mu)^2),
     coefficient_mse = sapply(coef_list, function(vars) {
       mean((true_coef[vars] - post_mean[vars])^2)
     }),
-    estimates = post_mean
+    estimates = post_mean,
+    test_mse = mean((y_test - (X_test %*% post_mean) - mu) ^ 2)
   )
   
   return(results)
@@ -127,113 +130,67 @@ compute_ben_mse <- function(X_train, y_train, true_coef, coef_list,
     coefficient_mse = sapply(coef_list, function(vars) {
       mean((true_coef[vars] - ben_coef[vars])^2)
     }),
-    estimates = ben_coef[-1]
+    estimates = ben_coef[-1],
+    test_mse = mean((y_test - (X_test %*% ben_coef[-1] + ben_coef[1])) ^ 2)
   )
   
   return(results)
 }
 
-compute_glasso_mse <- function(df_train, y_train, true_coef, coef_list) {
+compute_glasso_mse <- function(df_train,
+                               X_train,     # your dummy‐coded training matrix
+                               y_train,
+                               true_coef,   # named vector of “true” coefficients, names matching colnames(X_train)
+                               coef_list,   # list: each element is a character vector of column‐names belonging to one covariate
+                               df_test,
+                               X_test,      # your dummy‐coded test matrix (same columns / order as X_train)
+                               y_test) {
   require(grpreg)
   
-  # 1. Preprocessing: Apply polynomial contrasts to ordinal variables (C1-C4)
-  df_processed <- df_train
-  ordinal_predictors <- c("C1", "C2", "C3", "C4")
+  # 1. Build group‐index from coef_list
+  #    e.g. if coef_list = list(C1 = c("C12","C13",…),
+  #                              C2 = c("C22","C23",…), …)
+  #    then groups = c(1,1,…, 2,2,…, 3,3,…)
+  group_ids <- rep(seq_along(coef_list), times = sapply(coef_list, length))
   
-  # Apply polynomial contrasts to ordinal variables
-  for(pred in ordinal_predictors) {
-    n_levels <- length(levels(df_processed[[pred]]))
-    contrasts(df_processed[[pred]]) <- contr.poly(n_levels)
-  }
+  # 2. Fit grpreg with CV
+  cvfit <- cv.grpreg(X_train, y_train,
+                     group   = group_ids,
+                     penalty = "grLasso",
+                     returnX = FALSE)
   
-  # 2. Create design matrix with updated contrasts
-  X_glasso <- model.matrix(~C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8, 
-                           data = df_processed)[,-1]
+  # 3. Extract the coefficients at λ_min
+  #    `coef(cvfit)` returns a length‐(p+1) vector: intercept + p betas
+  all_coef <- coef(cvfit, lambda = cvfit$lambda.min)
+  intercept <- as.numeric(all_coef[1])
+  betas     <- as.numeric(all_coef[-1])
+  names(betas) <- colnames(X_train)
   
-  # 3. Define group structure (1 group per predictor)
-  groups <- rep(1:8, times = sapply(coef_list, length))
-  
-  # 4. Fit Group Lasso with cross-validation
-  cv_fit <- cv.grpreg(X_glasso, y_train, 
-                      group = groups,
-                      penalty = "grLasso",
-                      returnX = FALSE)
-  
-  # 5. Extract coefficients at optimal lambda
-  fit_coef <- coef(cv_fit, lambda = cv_fit$lambda.min)
-  fit_coef <- fit_coef[-1]  # Remove intercept
-  
-  # 6. Map coefficients back to original dummy names
-  orig_names <- colnames(model.matrix(~., df_train))[-1]
-  aligned_coef <- setNames(numeric(length(orig_names)), orig_names)
-  aligned_coef[names(fit_coef)] <- fit_coef
-  
-  # 7. Calculate MSE metrics
-  results <- list(
-    prediction_mse = cv_fit$cve[cv_fit$min],
-    coefficient_mse = sapply(coef_list, function(vars) {
-      mean((true_coef[vars] - aligned_coef[vars])^2)
-    }),
-    estimates = aligned_coef
-  )
-  
-  return(results)
-}
-
-
-# Helper function to create Laplacian matrix
-get_laplacian <- function(n) {
-  D <- diff(diag(n), differences = 1)
-  t(D) %*% D
-}
-compute_glap_mse <- function(df_train, y_train, true_coef, coef_list) {
-  require(ordinalNet)
-  require(Matrix)
-  
-  # 1. Preprocessing: Convert ordinal predictors to ordered factors
-  df_processed <- df_train
-  ordinal_preds <- c("C1", "C2", "C3", "C4")
-  df_processed[ordinal_preds] <- lapply(df_processed[ordinal_preds], ordered)
-  
-  # 2. Create design matrix with ordinal-aware encoding
-  X_glap <- model.matrix(~C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8, 
-                         data = df_processed)[,-1]
-  
-  # 3. Create penalty matrices for ordinal variables
-  ord_mats <- lapply(ordinal_preds, function(pred) {
-    n_levels <- nlevels(df_processed[[pred]])
-    get_laplacian(n_levels - 1)  # From ordinalNet
+  # 4. Compute per‐covariate coefficient MSE
+  coef_mse <- sapply(coef_list, function(cols) {
+    mean( ( true_coef[ cols ] - betas[ cols ] )^2 )
   })
   
-  # 4. Define penalty factors for grouped Laplacian
-  penalty_mats <- do.call("bdiag", ord_mats)
-  groups <- c(rep(1:4, each = 1),  # Ordinal groups with Laplacian
-              rep(5:8, times = lengths(coef_list[5:8])))  # Nominal groups
+  # 5. Cross‐validated training‐MSPE
+  #    cvfit$cve is the vector of CV errors; cvfit$min is the index of λ_min
+  prediction_mse <- cvfit$cve[ cvfit$min ]
   
-  # 5. Fit ordinal-aware elastic net with Laplacian penalty
-  fit <- ordinalNet(X_glap, y_train,
-                    family = "gaussian",
-                    link = "identity",
-                    alpha = 0.2,  # Balance L1/L2
-                    lambdaValues = NULL,
-                    penaltyFactors = c(rep(1, 4), rep(0, 4)),  # Penalize ordinals
-                    standardize = FALSE)
+  # 6. Compute test‐MSE
+  #    ŷ_test = intercept + X_test %*% betas
+  y_hat_test <- as.vector( X_test %*% betas + intercept )
+  test_mse   <- mean( (y_test - y_hat_test)^2 )
   
-  # 6. Extract coefficients (excluding intercept)
-  fit_coef <- coef(fit)[-1]
-  names(fit_coef) <- colnames(X_glap)
-  
-  # 7. Calculate MSE metrics
-  results <- list(
-    prediction_mse = mean((y_train - (X_glap %*% fit_coef))^2),
-    coefficient_mse = sapply(coef_list, function(vars) {
-      mean((true_coef[vars] - fit_coef[vars])^2)
-    }),
-    estimates = fit_coef
-  )
-  
-  return(results)
+  # 7. Return all four pieces
+  return(list(
+    prediction_mse  = prediction_mse,
+    coefficient_mse = coef_mse,
+    estimates       = betas,
+    test_mse        = test_mse
+  ))
 }
+
+
+
 
 
 
