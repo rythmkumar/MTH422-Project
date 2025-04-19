@@ -285,8 +285,17 @@ for (i in 1:n_datasets) {
   y_train <- data_sim$y
   df_train <- data_sim$df
   X_train <- data_sim$X
+  ben_mse <- compute_ben_mse(X_train, y_train, true_coef, coef_list)
+  blasso_mse <- compute_blasso_mse(X_train, y_train, true_coef, coef_list)
+  full_mse <- compute_full_mse(df_train, X_train, y_train, true_coef, coef_list)
+  fusion_mse <- compute_fusion_mse(df_train, X_train, y_train, true_coef, coef_list)
+  glap_mse <- compute_glap_mse(df_train, y_train, true_coef, coef_list)
+  glasso_mse <- compute_glasso_mse(df_train, y_train, true_coef, coef_list)
+  penalty_mse <- compute_penalty_mse(X_train, y_train, true_coef, coef_list)
+  true_mse <- compute_true_mse(df_train, X_train, y_train, true_coef, coef_list)
  ## PLease put the models code here for getting the MSE's values
 }
+
 
 # priorr : mu * sigma.2 * beta (with hyperparameters: gamma^2 * Q^-1(delta) * (c / 2))
 # Q^-1 is the prior precision matrix
