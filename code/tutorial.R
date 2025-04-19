@@ -1,12 +1,12 @@
 # Install and load necessary packages
-# install.packages(c("bayesm","mcclust"))
-# install.packages("remotes")
-# remotes::install_github("cran/GreedyEPL")
-# install.packages("https://cran.r-project.org/src/contrib/Archive/effectFusion/effectFusion_1.1.3.tar.gz", 
-#                  repos = NULL, type = "source")
+install.packages(c("bayesm","mcclust"))
+install.packages("remotes")
+remotes::install_github("cran/GreedyEPL")
+install.packages("https://cran.r-project.org/src/contrib/Archive/effectFusion/effectFusion_1.1.3.tar.gz",
+                 repos = NULL, type = "source")
 
 # Set seed for reproducibility
-set.seed(123)
+set.seed(10) ## please give us A*
 
 # Define parameters
 n_obs <- 500
@@ -118,7 +118,8 @@ compute_full_mse <- function(df_train, X_train, y_train, true_coef, coef_list) {
   fit_coef <- coef_det[,1]
   invisible_output <- capture.output(mu_coef <- summary(full_fit)[1,1])
   names(fit_coef) <- names(true_coef)
-  
+  print("full")
+  print(fit_coef)
   # 3. Calculate prediction MSE
   y_pred <- mu_coef + as.numeric(X_train %*% fit_coef)
   prediction_mse <- mean((y_train - y_pred)^2)
@@ -215,7 +216,8 @@ compute_true_mse <- function(df_train, X_train, y_train, true_coef, coef_list) {
   names(fit_coef_true) <- colnames(X_true_matrix)
   y_pred_true <- mu_coef + as.numeric(X_true_matrix %*% fit_coef_true)
   prediction_mse <- mean((y_train - y_pred_true)^2)
-  
+  print("true")
+  # print("")
   # 6. Map estimated coefficients back to original coefficient space
   # Initialize with zeros
   fit_coef <- rep(0, length(true_coef))
@@ -274,28 +276,28 @@ compute_true_mse <- function(df_train, X_train, y_train, true_coef, coef_list) {
     estimates = fit_coef,
     X_true = X_true
   )
-  
+  print(fit_coef)
   return(results)
 }
 
 
-n_datasets <- 1 ## chane accordingly 
-for (i in 1:n_datasets) {
-  data_sim <- generate_data()
-  y_train <- data_sim$y
-  df_train <- data_sim$df
-  X_train <- data_sim$X
-  ben_mse <- compute_ben_mse(X_train, y_train, true_coef, coef_list)
-  blasso_mse <- compute_blasso_mse(X_train, y_train, true_coef, coef_list)
-  full_mse <- compute_full_mse(df_train, X_train, y_train, true_coef, coef_list)
-  fusion_mse <- compute_fusion_mse(df_train, X_train, y_train, true_coef, coef_list)
-  glap_mse <- compute_glap_mse(df_train, y_train, true_coef, coef_list)
-  glasso_mse <- compute_glasso_mse(df_train, y_train, true_coef, coef_list)
-  penalty_mse <- compute_penalty_mse(X_train, y_train, true_coef, coef_list)
-  true_mse <- compute_true_mse(df_train, X_train, y_train, true_coef, coef_list)
- ## PLease put the models code here for getting the MSE's values
-}
-
+# n_datasets <- 1 ## change accordingly 
+# for (i in 1:n_datasets) {
+#   data_sim <- generate_data()
+#   y_train <- data_sim$y
+#   df_train <- data_sim$df
+#   X_train <- data_sim$X
+#   ## PLease put the models code here for getting the MSE's values
+#   ben_mse <- compute_ben_mse(X_train, y_train, true_coef, coef_list)
+#   blasso_mse <- compute_blasso_mse(X_train, y_train, true_coef, coef_list)
+#   full_mse <- compute_full_mse(df_train, X_train, y_train, true_coef, coef_list)
+#   fusion_mse <- compute_fusion_mse(df_train, X_train, y_train, true_coef, coef_list)
+#   # glap_mse <- compute_glap_mse(df_train, y_train, true_coef, coef_list)
+#   glasso_mse <- compute_glasso_mse(df_train, y_train, true_coef, coef_list)
+#   penalty_mse <- compute_penalty_mse(X_train, y_train, true_coef, coef_list)
+#   true_mse <- compute_true_mse(df_train, X_train, y_train, true_coef, coef_list)
+# 
+# }
 
 # priorr : mu * sigma.2 * beta (with hyperparameters: gamma^2 * Q^-1(delta) * (c / 2))
 # Q^-1 is the prior precision matrix
@@ -305,3 +307,151 @@ for (i in 1:n_datasets) {
 # 
 # mu follows flat normal distribution N (0, M0)
 # mu follows flat normal distribution N (0, M0)
+
+
+
+### Generating plots in figure 4 and 5
+
+# Assuming methods list
+methods <- c("Full", "Fusion", "Penalty", "BLasso", "BEN", "GLasso", "True") # ADD SGL, BSGS
+n_methods <- length(methods)
+n_covariates <- 8
+
+# Create a list to store coefficient MSEs per method and per covariate
+coef_mse_list <- vector("list", length = n_methods)
+names(coef_mse_list) <- methods
+for (m in methods) {
+  coef_mse_list[[m]] <- vector("list", length = n_covariates)
+  for (c in 1:n_covariates) {
+    # print(c)
+    coef_mse_list[[m]][[c]] <- numeric(length = 0)
+    # print(coef_mse_list[[m]][[c]])
+  }
+}
+
+# Create a list to store prediction MSEs
+pred_mse_list <- list()
+for (m in methods) {
+  pred_mse_list[[m]] <- numeric()
+}
+
+n_datasets <- 10
+for (i in 1:n_datasets) {
+  print(paste("dataset", i))
+  data_sim <- generate_data()
+  y_train <- data_sim$y
+  df_train <- data_sim$df
+  X_train <- data_sim$X
+  
+  # Assuming true_coef and coef_list are defined
+  mse_results <- list(
+    Full = compute_full_mse(df_train, X_train, y_train, true_coef, coef_list),
+    Fusion = compute_fusion_mse(df_train, X_train, y_train, true_coef, coef_list),
+    Penalty = compute_penalty_mse(X_train, y_train, true_coef, coef_list),
+    BLasso = compute_blasso_mse(X_train, y_train, true_coef, coef_list),
+    BEN = compute_ben_mse(X_train, y_train, true_coef, coef_list),
+    GLasso = compute_glasso_mse(df_train, y_train, true_coef, coef_list),
+    # GLap = compute_glap_mse(df_train, y_train, true_coef, coef_list), # Uncomment if needed
+    # SGL = compute_sgl_mse(df_train, y_train, true_coef, coef_list),
+    # BSGS = compute_bsgs_mse(df_train, y_train, true_coef, coef_list),
+    True = compute_true_mse(df_train, X_train, y_train, true_coef, coef_list)
+  )
+  # print(mse_results$Full)
+  # Store values
+  for (m in names(mse_results)) {
+    pred_mse_list[[m]] <- c(pred_mse_list[[m]], mse_results[[m]]$prediction_mse)
+    for (c in 1:n_covariates) {
+      coef_mse_list[[m]][[c]] <- c(coef_mse_list[[m]][[c]], mse_results[[m]]$coefficient_mse[c])
+    }
+  }
+}
+
+## for testing
+data_sim <- generate_data()
+y_train <- data_sim$y
+df_train <- data_sim$df
+X_train <- data_sim$X
+for (m in names(mse_results)) {
+  pred_mse_list[[m]] <- c(pred_mse_list[[m]], mse_results[[m]]$prediction_mse)
+  for (c in 1:n_covariates) {
+    coef_mse_list[[m]][[c]] <- c(coef_mse_list[[m]][[c]], mse_results[[m]]$coefficient_mse[c])
+  }
+}
+
+# For coefficient MSE
+coef_data <- data.frame(Method = character(), Covariate = integer(), MSE = numeric())
+for (m in methods) {
+  # print(m)
+  for (c in 1:n_covariates) {
+    # print(c)
+    temp <- data.frame(Method = m,
+                       Covariate = c,
+                       MSE = coef_mse_list[[m]][[c]])
+    rownames(temp) <- NULL
+    coef_data <- rbind(coef_data, temp)
+  }
+}
+
+# coef_data
+
+# For prediction MSE
+prediction_data <- data.frame(Method = character(), MSE = numeric())
+for (m in methods) {
+  temp <- data.frame(Method = m, MSE = pred_mse_list[[m]])
+  rownames(temp) <- NULL
+  prediction_data <- rbind(prediction_data, temp)
+}
+
+# pred_data
+
+# Close all open graphics devices
+while (!is.null(dev.list())) dev.off()
+
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+
+coef_data$Covariate <- as.factor(coef_data$Covariate)
+
+# Loop through each covariate
+for (i in 1:8) {
+  p <- ggplot(coef_data %>% filter(Covariate == i), aes(x = Method, y = MSE)) +
+    geom_boxplot(fill = "#56B4E9", color = "black", outlier.shape = 1, outlier.alpha = 0.5) +
+    labs(title = paste("Covariate", i),
+         x = "Method",
+         y = "Coefficient MSE") +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.major.y = element_line(color = "gray80")
+    )
+  
+  print(p)
+  # Optional: Pause between plots if needed
+  readline(prompt = "Press [Enter] to continue to next plot...")
+}
+
+prediction_data$Method <- factor(prediction_data$Method,
+                                 levels = methods)
+
+# Boxplot for prediction MSE
+ggplot(prediction_data, aes(x = Method, y = MSE)) +
+  geom_boxplot(outlier.shape = 1,  # hollow circles
+               outlier.size = 2,
+               fill = "white",
+               color = "black",
+               width = 0.6,
+               fatten = 1) +
+  labs(title = "Simulation Study: MSPE of 500 New Observations",
+       x = NULL,
+       y = "Mean Squared Prediction Error (MSPE)") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.y = element_line(color = "gray85")
+  )
