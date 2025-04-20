@@ -130,3 +130,5 @@ final_df <- final_df %>% arrange(Covariate, Method)
 
 # Print the final table
 print(final_df)
+
+save(final_df,file = "table_TPR_NPR.RData")
