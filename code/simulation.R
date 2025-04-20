@@ -1,14 +1,3 @@
-## Install the following packages
-
-dependencies <- c("glmnet", "monomvn", "grpreg", "remotes", "bayesm", "mcclust")
-for (d in dependencies) {
-  if (!require(d)) install.packages(d)
-}
-
-remotes::install_github("cran/EBglmnet")
-remotes::install_github("cran/GreedyEPL")
-install.packages("https://cran.r-project.org/src/contrib/Archive/effectFusion/effectFusion_1.1.3.tar.gz",
-                 repos = NULL, type = "source")
 library(EBglmnet)
 
 # Set seed for reproducibility
@@ -590,6 +579,4 @@ save(train_mse_list, file = "training_mse.RData")
 save(data_sim_test, file = "test_data.RData")
 save(coef_mse_list, file = "coef_mse_list.RData")
 save(test_mse_list, file =  "test_mse.RData")
-
-
 
