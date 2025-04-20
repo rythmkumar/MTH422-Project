@@ -30,4 +30,4 @@ This project performs simulations and evaluates model performance on both synthe
    The results will be saved as `table_TPR_NPR.RData`.
 
 5. **Apply to Real-World Data**  
-   Run `real-life-study.R` to apply the analysis on the real dataset `real_data.csv`.
+   Run `real-life-study.R` to apply the analysis on the real dataset `Clean_Dataset.csv`.
